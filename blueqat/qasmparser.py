@@ -1,30 +1,30 @@
 from abc import abstractmethod
 from enum import Enum
 import re
-from typing import Any, Dict, List, Set
+from typing import Any, Callable, Dict, Iterable, List, Set, TextIO, Tuple, Union, NoReturn, Match
 from itertools import takewhile
 
 _regex_tokens = re.compile(r'OPENQASM 2.0|"[^"]+"|[a-zA-Z_][a-zA-Z_0-9]+|//|[0-9.]+|\S')
-def split_tokens(qasmstr):
+def split_tokens(qasmstr: str) -> Iterable[Tuple[int, str]]:
     for i, line in enumerate(qasmstr.split('\n')):
         toks = _regex_tokens.findall(line)
         yield from takewhile(
-                lambda x: not x[1].startswith('//'),
-                ((i, tok) for tok in toks))
+            lambda x: not x[1].startswith('//'),
+            ((i, tok) for tok in toks))
 
 
-def _err_with_lineno(lineno, msg):
+def _err_with_lineno(lineno: int, msg: str) -> NoReturn:
     raise ValueError(f"Line {lineno}: {msg}")
 
 
 class TokenGetter:
-    def __init__(self, it):
+    def __init__(self, it) -> None:
         self.it = it
         self.buf = []
         self.lineno = 1
 
 
-    def get(self):
+    def get(self) -> Tuple[int, str]:
         if self.buf:
             tok = self.buf.pop()
         else:
@@ -36,18 +36,18 @@ class TokenGetter:
         return tok
 
 
-    def unget(self, tok):
+    def unget(self, tok: Tuple[int, str]) -> None:
         self.buf.append(tok)
 
 
-    def _fail(self, action):
+    def _fail(self, action: Any) -> Any:
         if action is None:
             return None
         elif isinstance(action, str):
             _err_with_lineno(self.lineno, action)
 
 
-    def get_if(self, cond, or_else=None):
+    def get_if(self, cond: Any, or_else: Any = None) -> Union[Tuple[int, str], None]:
         tok = self.get()
         if tok is None:
             return self._fail(or_else)
@@ -64,11 +64,11 @@ class TokenGetter:
         raise ValueError('Unknown conditions')
 
 
-    def assert_semicolon(self, msg='";" is expected.'):
+    def assert_semicolon(self, msg: str = '";" is expected.') -> None:
         self.get_if(';', msg)
 
 
-def parse_qasm(qasmstr):
+def parse_qasm(qasmstr: str) -> 'QasmProgram':
     tokens = TokenGetter(split_tokens(qasmstr))
     errmsg = 'Program shall be start with "OPENQASM 2.0;".'
     tokens.get_if('OPENQASM 2.0', errmsg)
@@ -82,7 +82,7 @@ def parse_qasm(qasmstr):
     return QasmProgram(stmts, gates, qregs, cregs, included)
 
 
-def parse_qasmf(qasmfile, *args, **kwargs):
+def parse_qasmf(qasmfile: Union[str, TextIO], *args, **kwargs) -> 'QasmProgram':
     if isinstance(qasmfile, str):
         with open(qasmfile) as f:
             return parse_qasmf(f, *args, **kwargs)
@@ -99,7 +99,7 @@ class QasmProgram(QasmNode):
                  qregs: Dict[str, int],
                  cregs: Dict[str, int],
                  gates: Dict[str, Any],
-                 included: Set[str]):
+                 included: Set[str]) -> None:
         self.statements = statements
         self.qregs = qregs
         self.cregs = cregs
@@ -107,14 +107,43 @@ class QasmProgram(QasmNode):
         self.included = included
 
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'QasmProgram({repr(self.statements)}, ' + \
                f'{repr(self.qregs)}, {repr(self.cregs)}, ' + \
                f'{repr(self.gates)}, {repr(self.included)})'
 
 
+class QasmFloatExpr(QasmNode):
+    pass
+
+
 class QasmGateDef(QasmNode):
     pass
+
+
+class QasmBarrier(QasmNode):
+    pass
+
+
+class QasmMeasure(QasmNode):
+    pass
+
+
+class QasmIf(QasmNode):
+    pass
+
+
+class QasmGateApply(QasmNode):
+    def __init__(self,
+                 gate: 'QasmAbstractGate',
+                 params: List[QasmFloatExpr],
+                 qregs: List[Tuple[str, int]]) -> None:
+        self.gate = gate
+        self.params = params
+        self.qregs = qregs
+
+    def __repr__(self) -> str:
+        return f'QasmGateApply({repr(self.gate)}, {self.params}, {self.qregs})'
 
 
 QasmGateType = Enum('QasmGateType', 'Gate Opaque Builtin')
@@ -137,7 +166,7 @@ class QasmGate(QasmAbstractGate):
         self.name = '' # TODO: impl.
 
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'QasmGate({repr(self.gatedef)})'
 
 
@@ -150,7 +179,7 @@ class QasmOpaque(QasmAbstractGate):
         self.name = name
 
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"QasmOpaque('{self.name}')"
 
 
@@ -164,13 +193,13 @@ class QasmBuiltinGate(QasmAbstractGate):
         self.name = name
 
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"QasmBuiltinGate('{self.name}')"
 
 
-def _get_matcher(regex):
+def _get_matcher(regex: str) -> Callable[[str], Match]:
     _re = re.compile(regex)
-    def matcher(s):
+    def matcher(s: str) -> Match:
         return _re.match(s)
     return matcher
 
@@ -238,7 +267,7 @@ def _parse_include_stmt(tokens):
     return incfile[1][1:-1]
 
 
-def load_qelib1(gates):
+def load_qelib1(gates: Dict[str, QasmAbstractGate]) -> None:
     from blueqat.circuit import GATE_SET
     for gate in GATE_SET:
         gates[gate] = QasmBuiltinGate(GATE_SET[gate].lowername)
