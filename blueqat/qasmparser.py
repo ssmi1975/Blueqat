@@ -133,6 +133,10 @@ class QasmIf(QasmNode):
     pass
 
 
+class QasmReset(QasmNode):
+    pass
+
+
 class QasmGateApply(QasmNode):
     def __init__(self,
                  gate: 'QasmAbstractGate',
@@ -175,8 +179,12 @@ class QasmOpaque(QasmAbstractGate):
     def gatetype(cls):
         return QasmGateType.Opaque
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, params: List[str], qargs: List[str]):
         self.name = name
+        self.params = params
+        self.n_params = len(params)
+        self.qargs = qargs
+        self.n_qargs = len(qargs)
 
 
     def __repr__(self) -> str:
@@ -246,10 +254,52 @@ def _parse_statements(tokens,
                     _err_with_lineno(lineno, f'Cannot access to "{incfile}". Permission denied.')
                 except OSError as e:
                     _err_with_lineno(lineno, f'During reading file {incfile}, Error occured. {e}')
-        #elif tok == 
+        elif tok in ('gate', 'opaque'):
+            if tok == 'gate':
+                gate = _parse_def_gate(tokens)
+            else:
+                gate = _parse_opaque(tokens)
+            if gate in gates:
+                _err_with_lineno(lineno, f'Gate {gate} is already defined.')
+            gates[gate] = gate
+        elif tok == 'barrier':
+            tokens.assert_semicolon()
+            stmts.append(QasmBarrier())
+        elif tok == 'if':
+            stmts.append(_parse_if_stmt(tokens))
+        elif tok == 'reset':
+            stmts.append(_parse_reset_stmt(tokens))
+        elif tok in gates:
+            stmts.append(_parse_apply_gate(tokens))
         else:
             print(f"?{lineno}: {tok}")
         lineno, tok = tokens.get()
+
+
+def _parse_params(tokens, allow_no_params: bool, allow_empty: bool) -> List[Any]:
+    if allow_no_params:
+        has_params = tokens.get_if('(')
+        if not has_params:
+            return []
+    else:
+        tokens.get_if('(', 'No parameter found.')
+    params = []
+    if tokens.get_if(')') is None:
+        if allow_empty:
+            return []
+        _err_with_lineno(params[0], 'Empty parameter "()" is not allowed.')
+    while 1:
+        param = tokens.get()
+        if param is None:
+            _err_with_lineno(params[0], 'Unexpected end of file.')
+        params.append(param[1])
+        delim = tokens.get()
+        if delim is None:
+            _err_with_lineno(params[0], 'Unexpected end of file.')
+        if delim[1] == ')':
+            return params
+        if delim[1] != ',':
+            _err_with_lineno(params[0], f'Unexpected token "{delim[1]}".')
 
 
 def _parse_reg(tokens):
@@ -265,6 +315,32 @@ def _parse_include_stmt(tokens):
     incfile = tokens.get_if(_is_quoted_str, 'After "include", file path is expected.')
     tokens.assert_semicolon()
     return incfile[1][1:-1]
+
+
+def _parse_if_stmt(tokens):
+    # TODO: Impl.
+    return QasmIf()
+
+
+def _parse_reset_stmt(tokens):
+    # TODO: Impl.
+    return QasmReset()
+
+
+def _parse_apply_gate(tokens):
+    # TODO: Impl.
+    return QasmReset()
+
+
+def _parse_def_gate(tokens):
+    # TODO: Impl.
+    return QasmGateDef()
+
+
+def _parse_opaque(tokens):
+    name = tokens.get_if(_is_symbol, 'After "opaque", name is expected.')
+    params = _parse_params(tokens, allow_no_params=True, allow_empty=False)
+    return QasmOpaque(name, params)
 
 
 def load_qelib1(gates: Dict[str, QasmAbstractGate]) -> None:
