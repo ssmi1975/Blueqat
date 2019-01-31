@@ -1,6 +1,7 @@
 from abc import abstractmethod
 from enum import Enum
 import re
+import math
 from typing import Any, Callable, Dict, Iterable, List, Set, TextIO, Tuple, Union, NoReturn, Match
 from itertools import takewhile
 
@@ -113,12 +114,54 @@ class QasmProgram(QasmNode):
                f'{repr(self.gates)}, {repr(self.included)})'
 
 
-class QasmFloatExpr(QasmNode):
+class QasmExpr(QasmNode):
+    @abstractmethod
+    def eval(self):
+        pass
+
+
+class QasmRealExpr(QasmExpr):
     pass
+
+
+class QasmRealFactor(QasmExpr):
+    pass
+
+
+class QasmRealValue(QasmExpr):
+    pass
+
+
+QasmRealFunctions = Enum('QasmRealFunctions', 'Sin Cos')
+
+class QasmRealCall(QasmExpr):
+    pass
+
+
+QasmRealConstValues = Enum('QasmRealConstValue', 'Pi')
+
+class QasmRealConst(QasmExpr):
+    def __init__(self, value: QasmRealConstValues):
+        self.value = value
+
+    def eval(self):
+        if self.value == QasmRealConstValues.Pi:
+            return math.pi
+
 
 
 class QasmGateDef(QasmNode):
     pass
+
+
+class QasmApplyGate(QasmNode):
+    def __init__(self, gate, params, qregs):
+        self.gate = gate
+        self.params = params
+        self.qregs = qregs
+
+    def __repr__(self):
+        return f'QasmApplyGate({self.gate}, {self.params}, {self.qregs})'
 
 
 class QasmBarrier(QasmNode):
@@ -140,7 +183,7 @@ class QasmReset(QasmNode):
 class QasmGateApply(QasmNode):
     def __init__(self,
                  gate: 'QasmAbstractGate',
-                 params: List[QasmFloatExpr],
+                 params: List[QasmRealExpr],
                  qregs: List[Tuple[str, int]]) -> None:
         self.gate = gate
         self.params = params
@@ -196,9 +239,10 @@ class QasmBuiltinGate(QasmAbstractGate):
     def gatetype(cls):
         return QasmGateType.Builtin
 
-
     def __init__(self, name: str):
         self.name = name
+        self.n_params = 0
+        self.n_qregs = 1
 
 
     def __repr__(self) -> str:
@@ -214,7 +258,7 @@ def _get_matcher(regex: str) -> Callable[[str], Match]:
 
 _is_symbol = _get_matcher(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 _is_quoted_str = _get_matcher(r'^"[^"]*"$')
-_is_uint = _get_matcher(r'^[1-9][0-9]*$')
+_is_uint = _get_matcher(r'^([1-9][0-9]*|0)$')
 
 
 def _parse_statements(tokens,
@@ -226,12 +270,12 @@ def _parse_statements(tokens,
     lineno, tok = tokens.get()
     while tok:
         if tok == 'qreg':
-            sym, num = _parse_reg(tokens)
+            sym, num = _parse_def_reg(tokens)
             if sym in qregs or sym in cregs:
                 _err_with_lineno(lineno, f'Register "{sym}" is already defined.')
             qregs[sym] = num
         elif tok == 'creg':
-            sym, num = _parse_reg(tokens)
+            sym, num = _parse_def_reg(tokens)
             if sym in qregs or sym in cregs:
                 _err_with_lineno(lineno, f'Register "{sym}" is already defined.')
             cregs[sym] = num
@@ -242,6 +286,8 @@ def _parse_statements(tokens,
             included.add(incfile)
             if incfile == "qelib1.inc":
                 load_qelib1(gates)
+                #print('qelib1 loaded.')
+                #print(gates)
             else:
                 try:
                     with open(incfile) as f:
@@ -270,9 +316,10 @@ def _parse_statements(tokens,
         elif tok == 'reset':
             stmts.append(_parse_reset_stmt(tokens))
         elif tok in gates:
-            stmts.append(_parse_apply_gate(tokens))
+            stmts.append(_parse_apply_gate(tokens, gates[tok], qregs))
         else:
             print(f"?{lineno}: {tok}")
+        #print('stmts:', stmts)
         lineno, tok = tokens.get()
 
 
@@ -302,7 +349,7 @@ def _parse_params(tokens, allow_no_params: bool, allow_empty: bool) -> List[Any]
             _err_with_lineno(params[0], f'Unexpected token "{delim[1]}".')
 
 
-def _parse_reg(tokens):
+def _parse_def_reg(tokens):
     sym = tokens.get_if(_is_symbol, 'After "qreg", symbol is expected.')
     tokens.get_if('[', f'Unexpected token after "qreg {sym}".')
     num = tokens.get_if(_is_uint, f'After "qreg {sym}[", unsigned integer is expected.')
@@ -343,6 +390,45 @@ def _parse_opaque(tokens):
     return QasmOpaque(name, params)
 
 
+def _parse_expr_params(tokens, n_params):
+    tokens.get_if('(', 'Parameters are expected.')
+    # TODO: impl
+
+
+def _parse_qregs(tokens, qregs, n_qregs):
+    def parse_qreg():
+        lineno, reg = tokens.get_if(_is_symbol, 'qreg is expected.')
+        if reg not in qregs:
+            _err_with_lineno(lineno, 'Undefined qreg: "{reg}".')
+        # TODO: syntax for no-index
+        tokens.get_if('[', '"[" is expected.')
+        lineno, num = tokens.get_if(_is_uint, 'Index is expected.')
+        num = int(num)
+        if num >= qregs[reg]:
+            _err_with_lineno(lineno, f'Size of qreg "{reg}" is {qregs[reg].size} but {num} specified.')
+        tokens.get_if(']', '"]" is expected.')
+        return reg, num
+
+
+    if not n_qregs:
+        return []
+    regs = [parse_qreg()]
+    for _ in range(n_qregs - 1):
+        tokens.get_if(',', '"," is expected.')
+        regs.append(parse_qreg())
+    tokens.assert_semicolon()
+    return regs
+        
+
+
+def _parse_apply_gate(tokens, gate, qregs):
+    params = ()
+    if gate.n_params:
+        params = _parse_expr_params(tokens, gate.n_params)
+    qregs = _parse_qregs(tokens, qregs, gate.n_qregs)
+    return QasmApplyGate(gate, params, qregs)
+
+
 def load_qelib1(gates: Dict[str, QasmAbstractGate]) -> None:
     from blueqat.circuit import GATE_SET
     for gate in GATE_SET:
@@ -376,7 +462,5 @@ cu1(pi/2) q[3],q[2];
 h q[3];
 measure q -> c;'''
 
-    print(list(split_tokens("""
-test; te st; te,s///// // //// /t [test1]""")))
     print(list(split_tokens(qftstr)))
     print(parse_qasm(qftstr))
