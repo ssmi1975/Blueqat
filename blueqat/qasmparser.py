@@ -18,11 +18,10 @@ def _err_with_lineno(lineno: int, msg: str) -> NoReturn:
 
 
 class TokenGetter:
-    def __init__(self, it) -> None:
+    def __init__(self, it: Iterable[Tuple[int, str]]) -> None:
         self.it = it
         self.buf = []
         self.lineno = 1
-
 
     def get(self) -> Tuple[int, str]:
         if self.buf:
@@ -35,17 +34,14 @@ class TokenGetter:
         self.lineno = tok[0]
         return tok
 
-
     def unget(self, tok: Tuple[int, str]) -> None:
         self.buf.append(tok)
-
 
     def _fail(self, action: Any) -> Any:
         if action is None:
             return None
         elif isinstance(action, str):
             _err_with_lineno(self.lineno, action)
-
 
     def get_if(self, cond: Any, or_else: Any = None) -> Union[Tuple[int, str], None]:
         tok = self.get()
@@ -62,7 +58,6 @@ class TokenGetter:
             self.unget(tok)
             return self._fail(or_else)
         raise ValueError('Unknown conditions')
-
 
     def assert_semicolon(self, msg: str = '";" is expected.') -> None:
         self.get_if(';', msg)
@@ -154,10 +149,20 @@ QasmGateType = Enum('QasmGateType', 'Gate Opaque Builtin')
 
 
 class QasmAbstractGate:
+    def __init__(self, name: str, params: List[str], qargs: List[str]):
+        self.name = name
+        self.params = params
+        self.n_params = len(params)
+        self.qargs = qargs
+        self.n_qargs = len(qargs)
+
     @classmethod
     @abstractmethod
     def gatetype(cls) -> QasmGateType:
         pass
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}('{self.name}', {self.params}, {self.qargs})"
 
 
 class QasmGate(QasmAbstractGate):
@@ -167,7 +172,8 @@ class QasmGate(QasmAbstractGate):
 
     def __init__(self, gatedef: QasmGateDef):
         self.gatedef = gatedef
-        self.name = '' # TODO: impl.
+        name = ''; params = []; qargs = [] # TODO: Impl.
+        super().__init__(name, params, qargs)
 
 
     def __repr__(self) -> str:
@@ -179,14 +185,6 @@ class QasmOpaque(QasmAbstractGate):
     def gatetype(cls):
         return QasmGateType.Opaque
 
-    def __init__(self, name: str, params: List[str], qargs: List[str]):
-        self.name = name
-        self.params = params
-        self.n_params = len(params)
-        self.qargs = qargs
-        self.n_qargs = len(qargs)
-
-
     def __repr__(self) -> str:
         return f"QasmOpaque('{self.name}')"
 
@@ -196,13 +194,9 @@ class QasmBuiltinGate(QasmAbstractGate):
     def gatetype(cls):
         return QasmGateType.Builtin
 
-
     def __init__(self, name: str):
-        self.name = name
-
-
-    def __repr__(self) -> str:
-        return f"QasmBuiltinGate('{self.name}')"
+        params = []; qargs = [] # TODO: Impl.
+        super().__init__(name, params, qargs)
 
 
 def _get_matcher(regex: str) -> Callable[[str], Match]:
