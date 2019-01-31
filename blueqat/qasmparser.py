@@ -2,6 +2,7 @@ from abc import abstractmethod
 from enum import Enum
 import re
 import math
+import warnings
 from typing import Any, Callable, Dict, Iterable, List, Set, TextIO, Tuple, Union, NoReturn, Match
 from itertools import takewhile
 
@@ -160,7 +161,11 @@ class QasmApplyGate(QasmNode):
 
 
 class QasmBarrier(QasmNode):
-    pass
+    def __init__(self, qregs):
+        self.qregs = qregs
+
+    def __repr__(self):
+        return f'QasmBarrier({self.qregs})'
 
 
 class QasmMeasure(QasmNode):
@@ -238,7 +243,7 @@ class QasmBuiltinGate(QasmAbstractGate):
         return QasmGateType.Builtin
 
     def __init__(self, name: str):
-        params = []; qargs = [] # TODO: Impl.
+        params = []; qargs = ['t'] # TODO: Impl.
         super().__init__(name, params, qargs)
 
     def __repr__(self) -> str:
@@ -305,8 +310,7 @@ def _parse_statements(tokens,
                 _err_with_lineno(lineno, f'Gate {gate} is already defined.')
             gates[gate] = gate
         elif tok == 'barrier':
-            tokens.assert_semicolon()
-            stmts.append(QasmBarrier())
+            stmts.append(_parse_barrier(tokens, qregs))
         elif tok == 'if':
             stmts.append(_parse_if_stmt(tokens))
         elif tok == 'reset':
@@ -315,34 +319,60 @@ def _parse_statements(tokens,
             stmts.append(_parse_apply_gate(tokens, gates[tok], qregs))
         else:
             print(f"?{lineno}: {tok}")
-        #print('stmts:', stmts)
+            print('stmts:', stmts)
         lineno, tok = tokens.get()
 
 
-def _parse_params(tokens, allow_no_params: bool, allow_empty: bool) -> List[Any]:
-    if allow_no_params:
-        has_params = tokens.get_if('(')
-        if not has_params:
-            return []
-    else:
-        tokens.get_if('(', 'No parameter found.')
+def _parse_idlist(tokens, endtoken: str) -> List[Any]:
     params = []
-    if tokens.get_if(')') is None:
-        if allow_empty:
-            return []
-        _err_with_lineno(params[0], 'Empty parameter "()" is not allowed.')
     while 1:
         param = tokens.get()
         if param is None:
-            _err_with_lineno(params[0], 'Unexpected end of file.')
+            _err_with_lineno(param[0], 'Unexpected end of file.')
         params.append(param[1])
         delim = tokens.get()
         if delim is None:
-            _err_with_lineno(params[0], 'Unexpected end of file.')
-        if delim[1] == ')':
+            _err_with_lineno(param[0], 'Unexpected end of file.')
+        if delim[1] == endtoken:
             return params
         if delim[1] != ',':
-            _err_with_lineno(params[0], f'Unexpected token "{delim[1]}".')
+            _err_with_lineno(param[0], f'Unexpected token "{delim[1]}".')
+
+
+def _parse_params(tokens,
+                  allow_no_params: bool = False,
+                  allow_empty: bool = False) -> List[Any]:
+    if allow_no_params:
+        paren = tokens.get_if('(')
+        if not paren:
+            return []
+    else:
+        paren = tokens.get_if('(', 'No parameter found.')
+    params = _parse_idlist(tokens, ')')
+    if not params and not allow_empty:
+        _err_with_lineno(paren[0], 'Empty parameter is not allowed.')
+    return params
+
+
+def _parse_qparams(tokens):
+    params = _parse_idlist(tokens, ';')
+    if not params:
+        _err_with_lineno(tokens.lineno, 'Empty parameter is not allowed.')
+    return params
+
+
+def _parse_barrier(tokens, qregs):
+    qregs = _parse_qregs(tokens, qregs)
+    return QasmBarrier(qregs)
+
+
+def _parse_args(tokens, n_params):
+    tokens.get_if('(', 'No parameter found.')
+    params = []
+    # TODO: Implement.
+    for i in range(n_params):
+        pass
+    return [0] * n_params
 
 
 def _parse_def_reg(tokens):
@@ -370,11 +400,6 @@ def _parse_reset_stmt(tokens):
     return QasmReset()
 
 
-def _parse_apply_gate(tokens):
-    # TODO: Impl.
-    return QasmReset()
-
-
 def _parse_def_gate(tokens):
     # TODO: Impl.
     return QasmGateDef()
@@ -383,45 +408,52 @@ def _parse_def_gate(tokens):
 def _parse_opaque(tokens):
     name = tokens.get_if(_is_symbol, 'After "opaque", name is expected.')
     params = _parse_params(tokens, allow_no_params=True, allow_empty=False)
-    return QasmOpaque(name, params)
+    qparams = _parse_qparams(tokens)
+    return QasmOpaque(name, params, qparams)
 
 
-def _parse_expr_params(tokens, n_params):
-    tokens.get_if('(', 'Parameters are expected.')
-    # TODO: impl
-
-
-def _parse_qregs(tokens, qregs, n_qregs):
-    def parse_qreg():
-        lineno, reg = tokens.get_if(_is_symbol, 'qreg is expected.')
+def _parse_qregs(tokens, qregs, n_qregs=-1):
+    def parse_qreg(must_found):
+        if must_found:
+            lineno, reg = tokens.get_if(_is_symbol, 'qreg is expected.')
+        else:
+            tok = tokens.get_if(_is_symbol)
+            if tok is None:
+                return None
+            lineno, reg = tok
         if reg not in qregs:
             _err_with_lineno(lineno, 'Undefined qreg: "{reg}".')
         # TODO: syntax for no-index
-        tokens.get_if('[', '"[" is expected.')
-        lineno, num = tokens.get_if(_is_uint, 'Index is expected.')
-        num = int(num)
-        if num >= qregs[reg]:
-            _err_with_lineno(lineno, f'Size of qreg "{reg}" is {qregs[reg].size} but {num} specified.')
-        tokens.get_if(']', '"]" is expected.')
-        return reg, num
+        if tokens.get_if('['):
+            lineno, num = tokens.get_if(_is_uint, 'Index is expected.')
+            num = int(num)
+            if num >= qregs[reg]:
+                _err_with_lineno(lineno, f'Size of qreg "{reg}" is {qregs[reg].size} but {num} specified.')
+            tokens.get_if(']', '"]" is expected.')
+            return reg, num
+        return reg, None
 
 
-    if not n_qregs:
-        return []
-    regs = [parse_qreg()]
-    for _ in range(n_qregs - 1):
-        tokens.get_if(',', '"," is expected.')
-        regs.append(parse_qreg())
-    tokens.assert_semicolon()
-    return regs
-        
+    regs = []
+    while 1:
+        tok = parse_qreg(False)
+        if tok is None:
+            return regs
+        regs.append(tok[1])
+        delim = tokens.get_if(',')
+        if not delim:
+            if n_qregs != -1 and n_qregs != len(regs):
+                _err_with_lineno(tokens.lineno,
+                                 f'{n_qregs} parameters are expected. {len(regs)} parameters found.')
+            tokens.assert_semicolon()
+            return regs
 
 
 def _parse_apply_gate(tokens, gate, qregs):
     params = ()
     if gate.n_params:
-        params = _parse_expr_params(tokens, gate.n_params)
-    qregs = _parse_qregs(tokens, qregs, gate.n_qregs)
+        params = _parse_params(tokens, gate.n_params)
+    qregs = _parse_qregs(tokens, qregs, gate.n_qargs)
     return QasmApplyGate(gate, params, qregs)
 
 
