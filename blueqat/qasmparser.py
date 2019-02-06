@@ -165,7 +165,8 @@ class QasmApplyGate(QasmNode):
 
 
 class QasmBarrier(QasmNode):
-    pass
+    def __init__(self, qregs):
+        self.qregs = qregs
 
 
 class QasmMeasure(QasmNode):
@@ -296,6 +297,8 @@ def _parse_statements(tokens,
                     _err_with_lineno(lineno, f'Cannot access to "{incfile}". Permission denied.')
                 except OSError as e:
                     _err_with_lineno(lineno, f'During reading file {incfile}, Error occured. {e}')
+        elif tok == 'barrier':
+            stmts.append(_parse_barrier_stmt(tokens, qregs))
         elif tok in gates:
             stmts.append(_parse_apply_gate(tokens, gates[tok], qregs))
         else:
@@ -329,14 +332,14 @@ def _parse_qregs(tokens, qregs, n_qregs):
         lineno, reg = tokens.get_if(_is_symbol, 'qreg is expected.')
         if reg not in qregs:
             _err_with_lineno(lineno, 'Undefined qreg: "{reg}".')
-        # TODO: syntax for no-index
-        tokens.get_if('[', '"[" is expected.')
-        lineno, num = tokens.get_if(_is_uint, 'Index is expected.')
-        num = int(num)
-        if num >= qregs[reg]:
-            _err_with_lineno(lineno, f'Size of qreg "{reg}" is {qregs[reg].size} but {num} specified.')
-        tokens.get_if(']', '"]" is expected.')
-        return reg, num
+        if tokens.get_if('['):
+            lineno, num = tokens.get_if(_is_uint, 'Index is expected.')
+            num = int(num)
+            if num >= qregs[reg]:
+                _err_with_lineno(lineno, f'Size of qreg "{reg}" is {qregs[reg].size} but {num} specified.')
+            tokens.get_if(']', '"]" is expected.')
+            return reg, num
+        return reg, None
         
 
     if not n_qregs:
@@ -356,6 +359,11 @@ def _parse_apply_gate(tokens, gate, qregs):
         params = _parse_expr_params(tokens, gate.n_params)
     qregs = _parse_qregs(tokens, qregs, gate.n_qregs)
     return QasmApplyGate(gate, params, qregs)
+
+
+def _parse_barrier_stmt(tokens, qregs):
+    qregs = _parse_qregs(tokens, qregs, 1) # TODO: n_regs >= 1
+    return QasmBarrier(qregs)
 
 
 def load_qelib1(gates: Dict[str, QasmAbstractGate]) -> None:
