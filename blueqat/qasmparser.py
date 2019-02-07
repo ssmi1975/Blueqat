@@ -310,7 +310,7 @@ def _parse_statements(tokens,
                 _err_with_lineno(lineno, f'Gate {gate} is already defined.')
             gates[gate] = gate
         elif tok == 'barrier':
-            stmts.append(_parse_barrier(tokens, qregs))
+            stmts.append(_parse_barrier_stmt(tokens, qregs))
         elif tok == 'if':
             stmts.append(_parse_if_stmt(tokens))
         elif tok == 'reset':
@@ -423,7 +423,6 @@ def _parse_qregs(tokens, qregs, n_qregs=-1):
             lineno, reg = tok
         if reg not in qregs:
             _err_with_lineno(lineno, 'Undefined qreg: "{reg}".')
-        # TODO: syntax for no-index
         if tokens.get_if('['):
             lineno, num = tokens.get_if(_is_uint, 'Index is expected.')
             num = int(num)
@@ -432,7 +431,6 @@ def _parse_qregs(tokens, qregs, n_qregs=-1):
             tokens.get_if(']', '"]" is expected.')
             return reg, num
         return reg, None
-
 
     regs = []
     while 1:
@@ -455,6 +453,11 @@ def _parse_apply_gate(tokens, gate, qregs):
         params = _parse_params(tokens, gate.n_params)
     qregs = _parse_qregs(tokens, qregs, gate.n_qargs)
     return QasmApplyGate(gate, params, qregs)
+
+
+def _parse_barrier_stmt(tokens, qregs):
+    qregs = _parse_qregs(tokens, qregs, 1) # TODO: n_regs >= 1
+    return QasmBarrier(qregs)
 
 
 def load_qelib1(gates: Dict[str, QasmAbstractGate]) -> None:
