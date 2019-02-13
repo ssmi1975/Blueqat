@@ -120,12 +120,48 @@ class QasmRealExpr(QasmExpr):
     pass
 
 
-class QasmRealFactor(QasmExpr):
-    pass
+class QasmRealAdd(QasmExpr):
+    def __init__(self, lhs: QasmExpr, rhs: QasmExpr):
+        self.lhs = lhs
+        self.rhs = rhs
+
+    def eval(self):
+        return lhs.eval() + rhs.eval()
+
+
+class QasmRealsub(QasmExpr):
+    def __init__(self, lhs: QasmExpr, rhs: QasmExpr):
+        self.lhs = lhs
+        self.rhs = rhs
+
+    def eval(self):
+        return lhs.eval() - rhs.eval()
+
+
+class QasmRealMul(QasmExpr):
+    def __init__(self, lhs: QasmExpr, rhs: QasmExpr):
+        self.lhs = lhs
+        self.rhs = rhs
+
+    def eval(self):
+        return lhs.eval() * rhs.eval()
+
+
+class QasmRealDiv(QasmExpr):
+    def __init__(self, lhs: QasmExpr, rhs: QasmExpr):
+        self.lhs = lhs
+        self.rhs = rhs
+
+    def eval(self):
+        return lhs.eval() / rhs.eval()
 
 
 class QasmRealValue(QasmExpr):
-    pass
+    def __init__(self, value: float):
+        self.value = value
+
+    def eval(self):
+        return self.value
 
 
 QasmRealFunctions = Enum('QasmRealFunctions', 'Sin Cos')
@@ -134,7 +170,7 @@ class QasmRealCall(QasmExpr):
     pass
 
 
-QasmRealConstValues = Enum('QasmRealConstValue', 'Pi')
+QasmRealConstValues = Enum('QasmRealConstValues', 'Pi')
 
 class QasmRealConst(QasmExpr):
     def __init__(self, value: QasmRealConstValues):
@@ -260,6 +296,7 @@ def _get_matcher(regex: str) -> Callable[[str], Match]:
 _is_symbol = _get_matcher(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 _is_quoted_str = _get_matcher(r'^"[^"]*"$')
 _is_uint = _get_matcher(r'^([1-9][0-9]*|0)$')
+_is_float = _get_matcher(r'^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$')
 
 
 def _parse_statements(tokens,
@@ -319,7 +356,7 @@ def _parse_statements(tokens,
             stmts.append(_parse_apply_gate(tokens, gates[tok], qregs))
         else:
             print(f"?{lineno}: {tok}")
-            print('stmts:', stmts)
+        print('stmts:', stmts)
         lineno, tok = tokens.get()
 
 
@@ -327,6 +364,22 @@ def _parse_idlist(tokens, endtoken: str) -> List[Any]:
     params = []
     while 1:
         param = tokens.get()
+        if param is None:
+            _err_with_lineno(param[0], 'Unexpected end of file.')
+        params.append(param[1])
+        delim = tokens.get()
+        if delim is None:
+            _err_with_lineno(param[0], 'Unexpected end of file.')
+        if delim[1] == endtoken:
+            return params
+        if delim[1] != ',':
+            _err_with_lineno(param[0], f'Unexpected token "{delim[1]}".')
+
+
+def _parse_exprlist(tokens, endtoken: str) -> List[Any]:
+    params = []
+    while 1:
+        param = _parse_expr(tokens)
         if param is None:
             _err_with_lineno(param[0], 'Unexpected end of file.')
         params.append(param[1])
@@ -366,15 +419,6 @@ def _parse_barrier(tokens, qregs):
     return QasmBarrier(qregs)
 
 
-def _parse_args(tokens, n_params):
-    tokens.get_if('(', 'No parameter found.')
-    params = []
-    # TODO: Implement.
-    for i in range(n_params):
-        pass
-    return [0] * n_params
-
-
 def _parse_def_reg(tokens):
     sym = tokens.get_if(_is_symbol, 'After "qreg", symbol is expected.')
     tokens.get_if('[', f'Unexpected token after "qreg {sym}".')
@@ -410,6 +454,12 @@ def _parse_opaque(tokens):
     params = _parse_params(tokens, allow_no_params=True, allow_empty=False)
     qparams = _parse_qparams(tokens)
     return QasmOpaque(name, params, qparams)
+
+
+def _parse_args(tokens) -> List[Any]:
+    paren = tokens.get_if('(', 'No parens found')
+    params = _parse_exprlist(tokens, ')')
+    return params
 
 
 def _parse_qregs(tokens, qregs, n_qregs=-1):
@@ -450,7 +500,7 @@ def _parse_qregs(tokens, qregs, n_qregs=-1):
 def _parse_apply_gate(tokens, gate, qregs):
     params = ()
     if gate.n_params:
-        params = _parse_params(tokens, gate.n_params)
+        params = _parse_args(tokens)
     qregs = _parse_qregs(tokens, qregs, gate.n_qargs)
     return QasmApplyGate(gate, params, qregs)
 
@@ -458,6 +508,49 @@ def _parse_apply_gate(tokens, gate, qregs):
 def _parse_barrier_stmt(tokens, qregs):
     qregs = _parse_qregs(tokens, qregs, 1) # TODO: n_regs >= 1
     return QasmBarrier(qregs)
+
+
+def _parse_expr(tokens):
+    # expr := term ('+'|'-' term)*
+    # term := factor ('*'|'/' factor)*
+    # factor := '('expr')' | const | float
+    # const := pi
+    # float := floating point number
+    print("_parse_expr")
+    def _parse_number(tokens):
+        numstr = tokens.get_if(_is_float, 'Floating point number is expected.')
+        return QasmRealValue(float(numstr))
+
+    def _parse_factor(tokens):
+        tok, line = tokens.get()
+        if tokens.get_if('('):
+            expr = _parse_expr(tokens)
+            tokens.get_if(')', 'Corresponded `)` not found.')
+            return expr
+        if tokens.get_if('pi'):
+            return QasmRealConst(QasmRealConstValues.Pi)
+        return _parse_number(tokens)
+
+    def _parse_term(tokens):
+        lhs = _parse_factor(tokens)
+        # TODO: 左結合に
+        if tokens.get_if('*'):
+            rhs = _parse_factor(tokens)
+            return QasmRealMul(lhs, rhs)
+        if tokens.get_if('/'):
+            rhs = _parse_factor(tokens)
+            return QasmRealDiv(lhs, rhs)
+        return lhs
+
+    lhs = _parse_term(tokens)
+    # TODO: 左結合に
+    if tokens.get_if('+'):
+        rhs = _parse_term(tokens)
+        return QasmRealAdd(lhs, rhs)
+    if tokens.get_if('-'):
+        rhs = _parse_term(tokens)
+        return QasmRealsub(lhs, rhs)
+    return lhs
 
 
 def load_qelib1(gates: Dict[str, QasmAbstractGate]) -> None:
