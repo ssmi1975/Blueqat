@@ -6,7 +6,7 @@ import warnings
 from typing import Any, Callable, Dict, Iterable, List, Set, TextIO, Tuple, Union, NoReturn, Match
 from itertools import takewhile
 
-_regex_tokens = re.compile(r'OPENQASM 2.0|"[^"]+"|[a-zA-Z_][a-zA-Z_0-9]+|//|[0-9.]+|\S')
+_regex_tokens = re.compile(r'OPENQASM 2.0|->|"[^"]+"|[a-zA-Z_][a-zA-Z_0-9]+|//|[0-9.]+|\S')
 def split_tokens(qasmstr: str) -> Iterable[Tuple[int, str]]:
     for i, line in enumerate(qasmstr.split('\n')):
         toks = _regex_tokens.findall(line)
@@ -115,12 +115,19 @@ class QasmExpr(QasmNode):
     def eval(self):
         pass
 
+    def __repr__(self):
+        if hasattr(self, 'value'):
+            return f'{self.__class__.__name__}({repr(self.value)})'
+        return f'{self.__class__.__name__}({repr(self.lhs)}, {repr(self.rhs)})'
+
 
 class QasmRealExpr(QasmExpr):
-    pass
+    @abstractmethod
+    def eval(self) -> float:
+        pass
 
 
-class QasmRealAdd(QasmExpr):
+class QasmRealAdd(QasmRealExpr):
     def __init__(self, lhs: QasmExpr, rhs: QasmExpr):
         self.lhs = lhs
         self.rhs = rhs
@@ -129,7 +136,7 @@ class QasmRealAdd(QasmExpr):
         return lhs.eval() + rhs.eval()
 
 
-class QasmRealsub(QasmExpr):
+class QasmRealsub(QasmRealExpr):
     def __init__(self, lhs: QasmExpr, rhs: QasmExpr):
         self.lhs = lhs
         self.rhs = rhs
@@ -138,7 +145,7 @@ class QasmRealsub(QasmExpr):
         return lhs.eval() - rhs.eval()
 
 
-class QasmRealMul(QasmExpr):
+class QasmRealMul(QasmRealExpr):
     def __init__(self, lhs: QasmExpr, rhs: QasmExpr):
         self.lhs = lhs
         self.rhs = rhs
@@ -147,7 +154,7 @@ class QasmRealMul(QasmExpr):
         return lhs.eval() * rhs.eval()
 
 
-class QasmRealDiv(QasmExpr):
+class QasmRealDiv(QasmRealExpr):
     def __init__(self, lhs: QasmExpr, rhs: QasmExpr):
         self.lhs = lhs
         self.rhs = rhs
@@ -156,7 +163,7 @@ class QasmRealDiv(QasmExpr):
         return lhs.eval() / rhs.eval()
 
 
-class QasmRealValue(QasmExpr):
+class QasmRealValue(QasmRealExpr):
     def __init__(self, value: float):
         self.value = value
 
@@ -166,13 +173,13 @@ class QasmRealValue(QasmExpr):
 
 QasmRealFunctions = Enum('QasmRealFunctions', 'Sin Cos')
 
-class QasmRealCall(QasmExpr):
+class QasmRealCall(QasmRealExpr):
     pass
 
 
 QasmRealConstValues = Enum('QasmRealConstValues', 'Pi')
 
-class QasmRealConst(QasmExpr):
+class QasmRealConst(QasmRealExpr):
     def __init__(self, value: QasmRealConstValues):
         self.value = value
 
@@ -214,6 +221,15 @@ class QasmIf(QasmNode):
 
 class QasmReset(QasmNode):
     pass
+
+
+class QasmMeasure(QasmNode):
+    def __init__(self, qregs, cregs):
+        self.qregs = qregs
+        self.cregs = cregs
+
+    def __repr__(self):
+        return f'QasmMeasure({self.qregs}, {self.cregs})'
 
 
 class QasmGateApply(QasmNode):
@@ -278,10 +294,6 @@ class QasmBuiltinGate(QasmAbstractGate):
     def gatetype(cls):
         return QasmGateType.Builtin
 
-    def __init__(self, name: str):
-        params = []; qargs = ['t'] # TODO: Impl.
-        super().__init__(name, params, qargs)
-
     def __repr__(self) -> str:
         return f"QasmBuiltinGate('{self.name}')"
 
@@ -300,10 +312,10 @@ _is_float = _get_matcher(r'^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$')
 
 
 def _parse_statements(tokens,
-                      stmts: List[Any],
+                      stmts: List[QasmNode],
                       qregs: Dict[str, int],
                       cregs: Dict[str, int],
-                      gates: Dict[str, Any],
+                      gates: Dict[str, QasmAbstractGate],
                       included: Set[str]):
     lineno, tok = tokens.get()
     while tok:
@@ -352,11 +364,13 @@ def _parse_statements(tokens,
             stmts.append(_parse_if_stmt(tokens))
         elif tok == 'reset':
             stmts.append(_parse_reset_stmt(tokens))
+        elif tok == 'measure':
+            stmts.append(_parse_measure_stmt(tokens, qregs, cregs))
         elif tok in gates:
             stmts.append(_parse_apply_gate(tokens, gates[tok], qregs))
         else:
             print(f"?{lineno}: {tok}")
-        print('stmts:', stmts)
+        #print('stmts:', stmts)
         lineno, tok = tokens.get()
 
 
@@ -382,7 +396,7 @@ def _parse_exprlist(tokens, endtoken: str) -> List[Any]:
         param = _parse_expr(tokens)
         if param is None:
             _err_with_lineno(param[0], 'Unexpected end of file.')
-        params.append(param[1])
+        params.append(param)
         delim = tokens.get()
         if delim is None:
             _err_with_lineno(param[0], 'Unexpected end of file.')
@@ -414,11 +428,6 @@ def _parse_qparams(tokens):
     return params
 
 
-def _parse_barrier(tokens, qregs):
-    qregs = _parse_qregs(tokens, qregs)
-    return QasmBarrier(qregs)
-
-
 def _parse_def_reg(tokens):
     sym = tokens.get_if(_is_symbol, 'After "qreg", symbol is expected.')
     tokens.get_if('[', f'Unexpected token after "qreg {sym}".')
@@ -442,6 +451,14 @@ def _parse_if_stmt(tokens):
 def _parse_reset_stmt(tokens):
     # TODO: Impl.
     return QasmReset()
+
+
+def _parse_measure_stmt(tokens, qregs, cregs):
+    qregs = _parse_qregs(tokens, qregs)
+    tokens.get_if('->', '"->" is expected.')
+    cregs = _parse_qregs(tokens, cregs)
+    tokens.assert_semicolon()
+    return QasmMeasure(qregs, cregs)
 
 
 def _parse_def_gate(tokens):
@@ -493,7 +510,6 @@ def _parse_qregs(tokens, qregs, n_qregs=-1):
             if n_qregs != -1 and n_qregs != len(regs):
                 _err_with_lineno(tokens.lineno,
                                  f'{n_qregs} parameters are expected. {len(regs)} parameters found.')
-            tokens.assert_semicolon()
             return regs
 
 
@@ -502,11 +518,13 @@ def _parse_apply_gate(tokens, gate, qregs):
     if gate.n_params:
         params = _parse_args(tokens)
     qregs = _parse_qregs(tokens, qregs, gate.n_qargs)
+    tokens.assert_semicolon()
     return QasmApplyGate(gate, params, qregs)
 
 
 def _parse_barrier_stmt(tokens, qregs):
-    qregs = _parse_qregs(tokens, qregs, 1) # TODO: n_regs >= 1
+    qregs = _parse_qregs(tokens, qregs)
+    tokens.assert_semicolon()
     return QasmBarrier(qregs)
 
 
@@ -516,13 +534,13 @@ def _parse_expr(tokens):
     # factor := '('expr')' | const | float
     # const := pi
     # float := floating point number
-    print("_parse_expr")
     def _parse_number(tokens):
-        numstr = tokens.get_if(_is_float, 'Floating point number is expected.')
+        line, tok = tokens.get()
+        tokens.unget((line, tok))
+        line, numstr = tokens.get_if(_is_float, 'Floating point number is expected.')
         return QasmRealValue(float(numstr))
 
     def _parse_factor(tokens):
-        tok, line = tokens.get()
         if tokens.get_if('('):
             expr = _parse_expr(tokens)
             tokens.get_if(')', 'Corresponded `)` not found.')
@@ -554,12 +572,36 @@ def _parse_expr(tokens):
 
 
 def load_qelib1(gates: Dict[str, QasmAbstractGate]) -> None:
-    from blueqat.circuit import GATE_SET
-    for gate in GATE_SET:
-        gates[gate] = QasmBuiltinGate(GATE_SET[gate].lowername)
-    # TODO: These gates are not defined in qelib1, but defined in language specifications.
-    gates['U'] = QasmBuiltinGate('u3')
-    gates['CX'] = QasmBuiltinGate('cx')
+    # TODO: Use circuit.GATE_SET.
+    gates.update({
+        'x': QasmBuiltinGate('x', [], ['t']),
+        'y': QasmBuiltinGate('y', [], ['t']),
+        'z': QasmBuiltinGate('z', [], ['t']),
+        'h': QasmBuiltinGate('h', [], ['t']),
+        't': QasmBuiltinGate('t', [], ['t']),
+        'tdg': QasmBuiltinGate('tdg', [], ['t']),
+        's': QasmBuiltinGate('s', [], ['t']),
+        'sdg': QasmBuiltinGate('sdg', [], ['t']),
+        'cx': QasmBuiltinGate('cx', [], ['c', 't']),
+        'cz': QasmBuiltinGate('cz', [], ['c', 't']),
+        'cnot': QasmBuiltinGate('cnot', [], ['c', 't']),
+        'rx': QasmBuiltinGate('rx', ['theta'], ['t']),
+        'ry': QasmBuiltinGate('ry', ['theta'], ['t']),
+        'rz': QasmBuiltinGate('rz', ['theta'], ['t']),
+        'phase': QasmBuiltinGate('rz', ['theta'], ['t']),
+        'u1': QasmBuiltinGate('u1', ['lambda'], ['t']),
+        'u2': QasmBuiltinGate('u2', ['phi', 'lambda'], ['t']),
+        'u3': QasmBuiltinGate('u3', ['theta', 'phi', 'lambda'], ['t']),
+        'cu1': QasmBuiltinGate('cu1', ['lambda'], ['c', 't']),
+        'cu2': QasmBuiltinGate('cu2', ['phi', 'lambda'], ['c', 't']),
+        'cu3': QasmBuiltinGate('cu3', ['theta', 'phi', 'lambda'], ['c', 't']),
+        'swap': QasmBuiltinGate('swap', [], ['c', 't']),
+        'ccx': QasmBuiltinGate('ccx', [], ['c1', 'c2', 't']),
+        'toffoli': QasmBuiltinGate('ccx', [], ['c1', 'c2', 't']),
+        # TODO: These gates are not defined in qelib1, but defined in language specifications.
+        'U': QasmBuiltinGate('u3', ['theta', 'phi', 'lambda'], ['t']),
+        'CX': QasmBuiltinGate('cx', [], ['c', 't'])
+    })
 
 
 if __name__ == '__main__':
@@ -586,5 +628,5 @@ cu1(pi/2) q[3],q[2];
 h q[3];
 measure q -> c;'''
 
-    print(list(split_tokens(qftstr)))
+    #print(list(split_tokens(qftstr)))
     print(parse_qasm(qftstr))
