@@ -6,7 +6,7 @@ import warnings
 from typing import Any, Callable, Dict, Iterable, List, Set, TextIO, Tuple, Union, NoReturn, Match
 from itertools import takewhile
 
-_regex_tokens = re.compile(r'OPENQASM 2.0|->|"[^"]+"|[a-zA-Z_][a-zA-Z_0-9]+|//|[0-9.]+|\S')
+_regex_tokens = re.compile(r'OPENQASM 2.0|->|==|"[^"]+"|[a-zA-Z_][a-zA-Z_0-9]+|//|[0-9.]+|\S')
 def split_tokens(qasmstr: str) -> Iterable[Tuple[int, str]]:
     for i, line in enumerate(qasmstr.split('\n')):
         toks = _regex_tokens.findall(line)
@@ -211,16 +211,22 @@ class QasmBarrier(QasmNode):
         return f'QasmBarrier({self.qregs})'
 
 
-class QasmMeasure(QasmNode):
-    pass
-
-
 class QasmIf(QasmNode):
-    pass
+    def __init__(self, creg: str, num: int, node: QasmNode):
+        self.creg = creg
+        self.num = num
+        self.node = node
+
+    def __repr__(self):
+        return f'QasmIf({self.creg}, {self.num}, {self.node})'
 
 
 class QasmReset(QasmNode):
-    pass
+    def __init__(self, qregs):
+        self.qregs = qregs
+
+    def __repr__(self):
+        return f'QasmReset({self.qregs})'
 
 
 class QasmMeasure(QasmNode):
@@ -361,9 +367,9 @@ def _parse_statements(tokens,
         elif tok == 'barrier':
             stmts.append(_parse_barrier_stmt(tokens, qregs))
         elif tok == 'if':
-            stmts.append(_parse_if_stmt(tokens))
+            stmts.append(_parse_if_stmt(tokens, gates, qregs, cregs))
         elif tok == 'reset':
-            stmts.append(_parse_reset_stmt(tokens))
+            stmts.append(_parse_reset_stmt(tokens, qregs))
         elif tok == 'measure':
             stmts.append(_parse_measure_stmt(tokens, qregs, cregs))
         elif tok in gates:
@@ -443,22 +449,39 @@ def _parse_include_stmt(tokens):
     return incfile[1][1:-1]
 
 
-def _parse_if_stmt(tokens):
-    # TODO: Impl.
-    return QasmIf()
+def _parse_if_stmt(tokens, gates, qregs, cregs):
+    tokens.get_if('(', '"(" is expected for if statements.')
+    line, c = tokens.get()
+    if c not in cregs:
+        _err_with_lineno(line, f'creg is expected, found "{c}".')
+    tokens.get_if('==', f'"==" is expected.')
+    line, num = tokens.get_if(_is_uint, f'unsigned integer value is expected, found "{tok}".')
+    line, tok = tokens.get()
+    if tok is None:
+        _err_with_lineno(line, 'Unexpected enf of file.')
+    if tok == 'measure':
+        node = _parse_measure_stmt(tokens, qregs, cregs)
+    elif tok == 'reset':
+        node = _parse_reset_stmt(tokens, qregs)
+    elif tok in gates:
+        node = _parse_apply_gate(tokens, gates[tok], qregs, cregs)
+    else:
+        _err_with_lineno(line, f'Unexpected token "{tok}" is found.')
+    return QasmIf(c, num, node)
 
 
-def _parse_reset_stmt(tokens):
-    # TODO: Impl.
-    return QasmReset()
+def _parse_reset_stmt(tokens, qregs):
+    q = _parse_qregs(tokens, qregs)
+    tokens.assert_semicolon()
+    return QasmReset(q)
 
 
 def _parse_measure_stmt(tokens, qregs, cregs):
-    qregs = _parse_qregs(tokens, qregs)
+    q = _parse_qregs(tokens, qregs)
     tokens.get_if('->', '"->" is expected.')
-    cregs = _parse_qregs(tokens, cregs)
+    c = _parse_qregs(tokens, cregs)
     tokens.assert_semicolon()
-    return QasmMeasure(qregs, cregs)
+    return QasmMeasure(q, c)
 
 
 def _parse_def_gate(tokens):
