@@ -6,7 +6,24 @@ import warnings
 from typing import Any, Callable, Dict, Iterable, List, Set, TextIO, Tuple, Union, NoReturn, Match
 from itertools import takewhile
 
-_regex_tokens = re.compile(r'OPENQASM 2.0|->|==|"[^"]+"|[a-zA-Z_][a-zA-Z_0-9]+|//|[0-9.]+|\S')
+
+_restr_symbol = r'[a-zA-Z_][a-zA-Z0-9_]*'
+_restr_quoted_str = r'"[^"]*"'
+_restr_uint = r'[1-9][0-9]*|0'
+_restr_float = r'[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?'
+_restr_funcs = r'sin|cos|tan|exp|ln|sqrt'
+
+_regex_tokens = re.compile(r'OPENQASM 2.0|->|==|' +
+        '|'.join((
+            _restr_symbol,
+            _restr_quoted_str,
+            _restr_uint,
+            _restr_float,
+            _restr_funcs,
+        )) + 
+        r'|//|\S')
+
+
 def split_tokens(qasmstr: str) -> Iterable[Tuple[int, str]]:
     for i, line in enumerate(qasmstr.split('\n')):
         toks = _regex_tokens.findall(line)
@@ -305,16 +322,16 @@ class QasmBuiltinGate(QasmAbstractGate):
 
 
 def _get_matcher(regex: str) -> Callable[[str], Match]:
-    _re = re.compile(regex)
+    _re = re.compile('^' + regex + '$')
     def matcher(s: str) -> Match:
         return _re.match(s)
     return matcher
 
 
-_is_symbol = _get_matcher(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
-_is_quoted_str = _get_matcher(r'^"[^"]*"$')
-_is_uint = _get_matcher(r'^([1-9][0-9]*|0)$')
-_is_float = _get_matcher(r'^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$')
+_is_symbol = _get_matcher(_restr_symbol)
+_is_quoted_str = _get_matcher(_restr_quoted_str)
+_is_uint = _get_matcher(_restr_uint)
+_is_float = _get_matcher(_restr_float)
 
 
 def _parse_statements(tokens,
@@ -554,8 +571,9 @@ def _parse_barrier_stmt(tokens, qregs):
 def _parse_expr(tokens):
     # expr := term ('+'|'-' term)*
     # term := factor ('*'|'/' factor)*
-    # factor := '('expr')' | const | float
+    # factor := '('expr')' | const | funccall | float
     # const := pi
+    # funccall := function '(' args ')'
     # float := floating point number
     def _parse_number(tokens):
         line, tok = tokens.get()
@@ -570,6 +588,7 @@ def _parse_expr(tokens):
             return expr
         if tokens.get_if('pi'):
             return QasmRealConst(QasmRealConstValues.Pi)
+        # TODO: function call 
         return _parse_number(tokens)
 
     def _parse_term(tokens):
@@ -625,6 +644,10 @@ def load_qelib1(gates: Dict[str, QasmAbstractGate]) -> None:
         'U': QasmBuiltinGate('u3', ['theta', 'phi', 'lambda'], ['t']),
         'CX': QasmBuiltinGate('cx', [], ['c', 't'])
     })
+
+
+def output_qasm(ast: QasmProgram):
+    pass
 
 
 if __name__ == '__main__':
