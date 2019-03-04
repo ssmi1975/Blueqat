@@ -17,7 +17,6 @@ _regex_tokens = re.compile(r'OPENQASM 2.0|->|==|' +
         '|'.join((
             _restr_symbol,
             _restr_quoted_str,
-            _restr_uint,
             _restr_float,
             _restr_funcs,
         )) + 
@@ -150,7 +149,7 @@ class QasmRealAdd(QasmRealExpr):
         self.rhs = rhs
 
     def eval(self):
-        return lhs.eval() + rhs.eval()
+        return self.lhs.eval() + self.rhs.eval()
 
 
 class QasmRealsub(QasmRealExpr):
@@ -159,7 +158,7 @@ class QasmRealsub(QasmRealExpr):
         self.rhs = rhs
 
     def eval(self):
-        return lhs.eval() - rhs.eval()
+        return self.lhs.eval() - self.rhs.eval()
 
 
 class QasmRealMul(QasmRealExpr):
@@ -168,7 +167,7 @@ class QasmRealMul(QasmRealExpr):
         self.rhs = rhs
 
     def eval(self):
-        return lhs.eval() * rhs.eval()
+        return self.lhs.eval() * self.rhs.eval()
 
 
 class QasmRealDiv(QasmRealExpr):
@@ -177,7 +176,7 @@ class QasmRealDiv(QasmRealExpr):
         self.rhs = rhs
 
     def eval(self):
-        return lhs.eval() / rhs.eval()
+        return self.lhs.eval() / self.rhs.eval()
 
 
 class QasmRealValue(QasmRealExpr):
@@ -418,15 +417,15 @@ def _parse_exprlist(tokens, endtoken: str) -> List[Any]:
     while 1:
         param = _parse_expr(tokens)
         if param is None:
-            _err_with_lineno(param[0], 'Unexpected end of file.')
+            _err_with_lineno(tokens.lineno, 'Unexpected end of file.')
         params.append(param)
         delim = tokens.get()
         if delim is None:
-            _err_with_lineno(param[0], 'Unexpected end of file.')
+            _err_with_lineno(delim[0], 'Unexpected end of file.')
         if delim[1] == endtoken:
             return params
         if delim[1] != ',':
-            _err_with_lineno(param[0], f'Unexpected token "{delim[1]}".')
+            _err_with_lineno(delim[0], f'Unexpected token "{delim[1]}".')
 
 
 def _parse_params(tokens,
@@ -544,7 +543,7 @@ def _parse_qregs(tokens, qregs, n_qregs=-1):
         tok = parse_qreg(False)
         if tok is None:
             return regs
-        regs.append(tok[1])
+        regs.append(tok)
         delim = tokens.get_if(',')
         if not delim:
             if n_qregs != -1 and n_qregs != len(regs):
@@ -646,8 +645,46 @@ def load_qelib1(gates: Dict[str, QasmAbstractGate]) -> None:
     })
 
 
-def output_qasm(ast: QasmProgram):
-    pass
+def output_qasm(ast: QasmProgram) -> str:
+    indent_nspace = 4
+    lines = ['OPENQASM 2.0;']
+    def add_line(line, indentlevel=0):
+        lines.append(' ' * (indent_nspace * indentlevel) + line)
+
+    def output_stmts(stmts, indentlevel=0):
+        for stmt in stmts:
+            if isinstance(stmt, QasmApplyGate):
+                line = stmt.gate.name
+                if stmt.params:
+                    line += '(' + ', '.join(str(x.eval()) for x in stmt.params) + ')'
+                line += ' '
+                line += ', '.join(q if n is None else f'{q}[{n}]' for q, n in stmt.qregs)
+                line += ';'
+                add_line(line, indentlevel)
+            elif isinstance(stmt, QasmBarrier):
+                line = 'barrier '
+                line += ', '.join(q if n is None else f'{q}[{n}]' for q, n in stmt.qregs)
+                line += ';'
+                add_line(line, indentlevel)
+            elif isinstance(stmt, QasmMeasure):
+                line = 'measure '
+                line += ', '.join(q if n is None else f'{q}[{n}]' for q, n in stmt.qregs)
+                line += ' -> '
+                line += ', '.join(c if n is None else f'{c}[{n}]' for c, n in stmt.cregs)
+                line += ';'
+                add_line(line, indentlevel)
+            else:
+                raise ValueError('Unknown node ' + stmt.__class__.__name__)
+
+    for inc in ast.included:
+        add_line(f'include "{inc}";')
+    for q, n in ast.qregs.items():
+        add_line(f'qreg {q}[{n}];')
+    for c, n in ast.cregs.items():
+        add_line(f'creg {c}[{n}];')
+    # TODO: Output gates: Dict[str, Any]
+    output_stmts(ast.statements)
+    return '\n'.join(lines)
 
 
 if __name__ == '__main__':
@@ -675,4 +712,12 @@ h q[3];
 measure q -> c;'''
 
     #print(list(split_tokens(qftstr)))
-    print(parse_qasm(qftstr))
+    qp = parse_qasm(qftstr)
+    print(qp)
+    qasm = output_qasm(qp)
+    print(qasm)
+    qp2 = parse_qasm(qasm)
+    print(qp2)
+    qasm2 = output_qasm(qp2)
+    assert qasm == qasm2
+    print('end.')
