@@ -687,6 +687,42 @@ def output_qasm(ast: QasmProgram) -> str:
     return '\n'.join(lines)
 
 
+def output_circuit(ast: QasmProgram) -> 'Circuit':
+    from blueqat import Circuit
+    c = Circuit()
+    qmaps = {}
+    qidx = 0
+    for q, n in ast.qregs.items():
+        qmaps[q] = (qidx, qidx + n)
+        qidx += n
+    def get_qubits(q, n):
+        if n is None:
+            return slice(qmaps[q][0], qmaps[q][1])
+        return qmaps[q][0] + n
+
+    def output_stmts(stmts):
+        for stmt in stmts:
+            if isinstance(stmt, QasmApplyGate):
+                g = getattr(c, stmt.gate.name)
+                for q, n in stmt.qregs:
+                    bits = get_qubits(q, n)
+                    if stmt.params:
+                        g(*[x.eval() for x in stmt.params])[bits]
+                    else:
+                        g[bits]
+            elif isinstance(stmt, QasmBarrier):
+                pass
+            elif isinstance(stmt, QasmMeasure):
+                for q, n in stmt.qregs:
+                    bits = get_qubits(q, n)
+                    c.m[bits]
+            else:
+                raise ValueError('Unknown node ' + stmt.__class__.__name__)
+
+    output_stmts(ast.statements)
+    return c
+
+
 if __name__ == '__main__':
     # This QFT code is copied from IBM, OpenQASM project.
     # https://github.com/Qiskit/openqasm/blob/master/examples/generic/qft.qasm
@@ -720,4 +756,6 @@ measure q -> c;'''
     print(qp2)
     qasm2 = output_qasm(qp2)
     assert qasm == qasm2
+    from blueqat import Circuit
+    print(output_circuit(parse_qasm(Circuit().h[0].m[:].to_qasm())).run(shots=100))
     print('end.')
